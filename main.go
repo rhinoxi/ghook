@@ -2,13 +2,13 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"strings"
 
+	"github.com/go-playground/webhooks/v6/github"
 	"gopkg.in/yaml.v3"
 )
 
@@ -23,17 +23,9 @@ type Service struct {
 	Remote   string `yaml:"remote"`
 }
 
-type GithubPayload struct {
-	Ref  string `json:"ref"`
-	Repo Repo   `json:"repository"`
-}
-
-type Repo struct {
-	Name string `json:"name"`
-}
-
 type HttpServer struct {
 	Services []Service
+	Hook     *github.Webhook
 }
 
 func pullRepo(remote string, path string) error {
@@ -48,19 +40,21 @@ func pullRepo(remote string, path string) error {
 }
 
 func (s *HttpServer) pullRepoHandler(w http.ResponseWriter, r *http.Request) {
-	var payload GithubPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		log.Println("Error:", err)
+	payloadI, err := s.Hook.Parse(r, github.PushEvent)
+	if err != nil {
+		log.Println("Hook parse error:", err)
 		return
 	}
 
+	payload := payloadI.(github.PushPayload)
+
 	for _, service := range s.Services {
-		if payload.Repo.Name == service.Name {
+		if payload.Repository.Name == service.Name {
 			refParts := strings.Split(payload.Ref, "/")
 			branch := refParts[len(refParts)-1]
 			if branch == service.Branch {
 				if err := pullRepo(service.Remote, service.Location); err != nil {
-					log.Println("Error:", err)
+					log.Println("Pull repo error:", err)
 					return
 				}
 				return
@@ -90,7 +84,9 @@ func main() {
 		panic(err)
 	}
 
-	s := HttpServer{Services: config.Services}
+	hook, _ := github.New()
+
+	s := HttpServer{Services: config.Services, Hook: hook}
 	if err := s.Run(); err != nil {
 		panic(err)
 	}
